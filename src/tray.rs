@@ -374,6 +374,15 @@ pub fn post_quit() {
     }
 }
 
+/// Update the global menu state (can be called from anywhere)
+pub fn update_menu_state(state: TrayMenuState) {
+    unsafe {
+        if let Some(ref menu_state) = MENU_STATE {
+            *menu_state.write() = state;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

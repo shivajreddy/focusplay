@@ -132,8 +132,11 @@ fn main() -> Result<()> {
             TrayAction::Exit => {
                 info!("Exit requested");
                 tray::post_quit();
+                return; // Don't update menu state on exit
             }
         }
+        // Update tray menu after state change
+        tray::update_menu_state(s.build_menu_state());
     });
 
     let tray = TrayIcon::new(tray_callback)?;
@@ -189,6 +192,8 @@ fn main() -> Result<()> {
                 error!("Failed to refresh sessions: {}", e);
             }
             info!("Sessions changed, refreshed list");
+            // Update tray menu with new sessions
+            tray::update_menu_state(s.build_menu_state());
         })?
     };
 
