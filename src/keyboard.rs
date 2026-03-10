@@ -116,6 +116,7 @@ pub fn uninstall_hook() -> Result<()> {
 }
 
 /// Check if the hook is currently installed
+#[allow(dead_code)]
 pub fn is_hook_installed() -> bool {
     HOOK_ACTIVE.load(Ordering::SeqCst)
 }

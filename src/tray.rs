@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tracing::{debug, error, info};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
@@ -55,6 +55,7 @@ pub struct TrayMenuState {
 }
 
 /// Session info for tray display
+#[allow(dead_code)]
 pub struct TraySession {
     pub id: String,
     pub display_name: String,
@@ -77,9 +78,9 @@ pub struct TrayIcon {
     menu_state: Arc<parking_lot::RwLock<TrayMenuState>>,
 }
 
-// Global storage for window procedure callback
-static mut TRAY_CALLBACK: Option<TrayCallback> = None;
-static mut MENU_STATE: Option<Arc<parking_lot::RwLock<TrayMenuState>>> = None;
+// Global storage for window procedure callback (safe via OnceLock)
+static TRAY_CALLBACK: OnceLock<TrayCallback> = OnceLock::new();
+static MENU_STATE: OnceLock<Arc<parking_lot::RwLock<TrayMenuState>>> = OnceLock::new();
 
 impl TrayIcon {
     /// Create a new tray icon
@@ -92,10 +93,8 @@ impl TrayIcon {
         }));
 
         // Store globally for window proc
-        unsafe {
-            TRAY_CALLBACK = Some(callback.clone());
-            MENU_STATE = Some(menu_state.clone());
-        }
+        let _ = TRAY_CALLBACK.set(callback.clone());
+        let _ = MENU_STATE.set(menu_state.clone());
 
         // Create hidden window for tray messages
         let hwnd = Self::create_hidden_window()?;
@@ -125,6 +124,7 @@ impl TrayIcon {
     }
 
     /// Update the tooltip
+    #[allow(dead_code)]
     pub fn set_tooltip(&mut self, tooltip: &str) -> Result<()> {
         let tooltip_wide: Vec<u16> = tooltip.encode_utf16().chain(std::iter::once(0)).collect();
         let len = tooltip_wide.len().min(128);
@@ -209,7 +209,7 @@ impl TrayIcon {
     /// Show the context menu
     fn show_context_menu(hwnd: HWND) -> Result<()> {
         unsafe {
-            let state = MENU_STATE.as_ref().unwrap().read();
+            let state = MENU_STATE.get().unwrap().read();
 
             let menu = CreatePopupMenu().context("Failed to create popup menu")?;
 
@@ -344,17 +344,15 @@ impl TrayIcon {
         } else if menu_id >= MENU_ID_BROWSER_TAB_START {
             // Browser tab selected - look up the tab_id from state
             let index = (menu_id - MENU_ID_BROWSER_TAB_START) as usize;
-            unsafe {
-                if let Some(ref menu_state) = MENU_STATE {
-                    let state = menu_state.read();
-                    if let Some(tab) = state.browser_tabs.get(index) {
-                        TrayAction::SelectBrowserTab(tab.tab_id)
-                    } else {
-                        return;
-                    }
+            if let Some(menu_state) = MENU_STATE.get() {
+                let state = menu_state.read();
+                if let Some(tab) = state.browser_tabs.get(index) {
+                    TrayAction::SelectBrowserTab(tab.tab_id)
                 } else {
                     return;
                 }
+            } else {
+                return;
             }
         } else if menu_id >= MENU_ID_SESSION_START && menu_id < MENU_ID_AUTOSTART {
             TrayAction::SelectSession((menu_id - MENU_ID_SESSION_START) as usize)
@@ -362,10 +360,8 @@ impl TrayIcon {
             return;
         };
 
-        unsafe {
-            if let Some(ref callback) = TRAY_CALLBACK {
-                callback(action);
-            }
+        if let Some(callback) = TRAY_CALLBACK.get() {
+            callback(action);
         }
     }
 }
@@ -438,10 +434,8 @@ pub fn post_quit() {
 
 /// Update the global menu state (can be called from anywhere)
 pub fn update_menu_state(state: TrayMenuState) {
-    unsafe {
-        if let Some(ref menu_state) = MENU_STATE {
-            *menu_state.write() = state;
-        }
+    if let Some(menu_state) = MENU_STATE.get() {
+        *menu_state.write() = state;
     }
 }
 

@@ -11,6 +11,7 @@ use windows::Media::Control::{
 
 /// Information about a media session
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SessionInfo {
     /// Unique identifier for the session (source app user model id)
     pub id: String,
@@ -79,6 +80,7 @@ impl Default for Mode {
 
 /// Browser tab info (from extension)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct BrowserTabInfo {
     pub tab_id: u32,
     pub title: String,
@@ -131,6 +133,7 @@ impl SessionManager {
     }
 
     /// Get a specific session by ID
+    #[allow(dead_code)]
     pub fn get_session(&self, id: &str) -> Option<SessionInfo> {
         self.sessions.read().get(id).cloned()
     }
@@ -340,6 +343,7 @@ impl SessionManager {
     }
 
     /// Check if current mode targets a browser tab
+    #[allow(dead_code)]
     pub fn is_browser_tab_mode(&self) -> Option<u32> {
         match *self.mode.read() {
             Mode::BrowserTab(tab_id) => Some(tab_id),

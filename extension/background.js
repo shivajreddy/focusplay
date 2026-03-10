@@ -7,13 +7,28 @@ const NATIVE_HOST = "com.focusplay.host";
 let nativePort = null;
 let knownTabs = new Map(); // tabId -> { id, title, url, audible, muted }
 let reconnectTimer = null;
+let reconnectAttempts = 0;
+let isConnecting = false;
+
+// Reconnect backoff: 2s, 4s, 8s, 16s, 30s (max)
+const RECONNECT_BASE_MS = 2000;
+const RECONNECT_MAX_MS = 30000;
+
+function getReconnectDelay() {
+  const delay = Math.min(
+    RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts),
+    RECONNECT_MAX_MS
+  );
+  return delay;
+}
 
 // ============================================================================
 // NATIVE MESSAGING
 // ============================================================================
 
 function connectToNative() {
-  if (nativePort) return;
+  if (nativePort || isConnecting) return;
+  isConnecting = true;
 
   try {
     nativePort = chrome.runtime.connectNative(NATIVE_HOST);
@@ -28,21 +43,41 @@ function connectToNative() {
       const err = chrome.runtime.lastError;
       console.log("[FocusPlay] Disconnected from native host", err?.message);
       nativePort = null;
+      isConnecting = false;
 
-      // Retry connection after delay
-      if (!reconnectTimer) {
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          connectToNative();
-        }, 5000);
-      }
+      // Schedule reconnect with backoff
+      scheduleReconnect();
     });
+
+    // Connection succeeded - reset backoff
+    reconnectAttempts = 0;
+    isConnecting = false;
 
     // Send current tab state on connect
     sendTabUpdate();
   } catch (e) {
     console.error("[FocusPlay] Failed to connect to native host:", e);
+    nativePort = null;
+    isConnecting = false;
+
+    // Schedule reconnect with backoff
+    scheduleReconnect();
   }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+
+  const delay = getReconnectDelay();
+  reconnectAttempts++;
+  console.log(
+    `[FocusPlay] Scheduling reconnect in ${delay}ms (attempt ${reconnectAttempts})`
+  );
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectToNative();
+  }, delay);
 }
 
 function sendToNative(msg) {
@@ -80,25 +115,42 @@ function handleNativeMessage(msg) {
 // ============================================================================
 
 async function scanAudibleTabs() {
-  const tabs = await chrome.tabs.query({ audible: true });
-  const currentIds = new Set();
-
-  for (const tab of tabs) {
-    currentIds.add(tab.id);
-    knownTabs.set(tab.id, {
-      id: tab.id,
-      title: tab.title || "Untitled",
-      url: tab.url || "",
-      audible: tab.audible,
-      muted: tab.mutedInfo?.muted || false,
-    });
-  }
-
-  // Remove tabs that are no longer audible
-  for (const [tabId] of knownTabs) {
-    if (!currentIds.has(tabId)) {
-      knownTabs.delete(tabId);
+  try {
+    // Query all tabs first for debugging
+    const allTabs = await chrome.tabs.query({});
+    console.log(
+      `[FocusPlay] Total tabs: ${allTabs.length}, audible: ${allTabs.filter((t) => t.audible).length}`
+    );
+    for (const t of allTabs) {
+      if (t.audible) {
+        console.log(
+          `[FocusPlay]   Audible tab: id=${t.id} title="${t.title}" url="${t.url}"`
+        );
+      }
     }
+
+    const tabs = allTabs.filter((t) => t.audible);
+    const currentIds = new Set();
+
+    for (const tab of tabs) {
+      currentIds.add(tab.id);
+      knownTabs.set(tab.id, {
+        id: tab.id,
+        title: tab.title || "Untitled",
+        url: tab.url || "",
+        audible: tab.audible,
+        muted: tab.mutedInfo?.muted || false,
+      });
+    }
+
+    // Remove tabs that are no longer audible
+    for (const [tabId] of knownTabs) {
+      if (!currentIds.has(tabId)) {
+        knownTabs.delete(tabId);
+      }
+    }
+  } catch (e) {
+    console.error("[FocusPlay] Error scanning tabs:", e);
   }
 }
 
@@ -136,7 +188,9 @@ async function togglePlayPause(tabId) {
 
         // Prefer video over audio, and playing over paused
         const playing = mediaElements.find((el) => !el.paused);
-        const paused = mediaElements.find((el) => el.paused && el.currentTime > 0);
+        const paused = mediaElements.find(
+          (el) => el.paused && el.currentTime > 0
+        );
         const target = playing || paused || mediaElements[0];
 
         if (target) {
@@ -154,7 +208,10 @@ async function togglePlayPause(tabId) {
     });
     console.log(`[FocusPlay] Toggled play/pause on tab ${tabId}`);
   } catch (e) {
-    console.error(`[FocusPlay] Failed to toggle play/pause on tab ${tabId}:`, e);
+    console.error(
+      `[FocusPlay] Failed to toggle play/pause on tab ${tabId}:`,
+      e
+    );
   }
 }
 
@@ -175,12 +232,16 @@ async function sendMediaAction(tabId, action) {
           ...document.querySelectorAll("video"),
           ...document.querySelectorAll("audio"),
         ];
-        const target = mediaElements.find((el) => !el.paused) || mediaElements[0];
+        const target =
+          mediaElements.find((el) => !el.paused) || mediaElements[0];
 
         if (target) {
           if (action === "nexttrack") {
             // Skip forward 10 seconds as fallback
-            target.currentTime = Math.min(target.duration, target.currentTime + 10);
+            target.currentTime = Math.min(
+              target.duration,
+              target.currentTime + 10
+            );
           } else if (action === "previoustrack") {
             // Skip back 10 seconds as fallback
             target.currentTime = Math.max(0, target.currentTime - 10);
@@ -190,7 +251,10 @@ async function sendMediaAction(tabId, action) {
       args: [action],
     });
   } catch (e) {
-    console.error(`[FocusPlay] Failed media action ${action} on tab ${tabId}:`, e);
+    console.error(
+      `[FocusPlay] Failed media action ${action} on tab ${tabId}:`,
+      e
+    );
   }
 }
 
@@ -200,6 +264,9 @@ async function sendMediaAction(tabId, action) {
 
 // Tab updated (title change, audio state change)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  console.log(
+    `[FocusPlay] Tab updated: id=${tabId} changes=${JSON.stringify(changeInfo)}`
+  );
   if (changeInfo.audible !== undefined || changeInfo.title !== undefined) {
     sendTabUpdate();
   }

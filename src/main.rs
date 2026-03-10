@@ -15,6 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+use windows::core::w;
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+use windows::Win32::System::Threading::CreateMutexW;
 
 use keyboard::MediaKey;
 use session::{BrowserTabInfo, Mode, SessionManager};
@@ -114,10 +117,25 @@ fn main() -> Result<()> {
 }
 
 fn run_tray_app() -> Result<()> {
-    // Initialize logging
+    // Initialize logging to file next to exe
+    let log_path = std::env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("focusplay.exe"))
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("focusplay.log");
+    let log_file = std::fs::File::create(&log_path)?;
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("focusplay=info".parse()?))
+        .with_env_filter(EnvFilter::from_default_env().add_directive("focusplay=debug".parse()?))
+        .with_writer(std::sync::Mutex::new(log_file))
+        .with_ansi(false)
         .init();
+
+    // Single-instance enforcement via named mutex
+    let _mutex = unsafe { CreateMutexW(None, true, w!("Global\\FocusPlaySingleInstance"))? };
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        eprintln!("FocusPlay is already running.");
+        return Ok(());
+    }
 
     info!("FocusPlay starting...");
 
