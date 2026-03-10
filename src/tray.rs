@@ -26,12 +26,17 @@ const MENU_ID_SESSION_START: u16 = 2000; // Sessions start at 2000+
 const MENU_ID_AUTOSTART: u16 = 3000;
 const MENU_ID_EXIT: u16 = 9999;
 
+/// Menu item IDs for browser tabs
+const MENU_ID_BROWSER_TAB_START: u16 = 4000;
+
 /// Callback for menu actions
 pub enum TrayAction {
     /// User selected Default mode
     SelectDefault,
     /// User selected a session by index
     SelectSession(usize),
+    /// User selected a browser tab by tab ID
+    SelectBrowserTab(u32),
     /// User toggled autostart
     ToggleAutostart,
     /// User clicked exit
@@ -45,12 +50,20 @@ pub type TrayCallback = Arc<dyn Fn(TrayAction) + Send + Sync>;
 pub struct TrayMenuState {
     pub is_default: bool,
     pub sessions: Vec<TraySession>,
+    pub browser_tabs: Vec<TrayBrowserTab>,
     pub autostart_enabled: bool,
 }
 
 /// Session info for tray display
 pub struct TraySession {
     pub id: String,
+    pub display_name: String,
+    pub is_selected: bool,
+}
+
+/// Browser tab info for tray display
+pub struct TrayBrowserTab {
+    pub tab_id: u32,
     pub display_name: String,
     pub is_selected: bool,
 }
@@ -74,6 +87,7 @@ impl TrayIcon {
         let menu_state = Arc::new(parking_lot::RwLock::new(TrayMenuState {
             is_default: true,
             sessions: Vec::new(),
+            browser_tabs: Vec::new(),
             autostart_enabled: false,
         }));
 
@@ -216,7 +230,7 @@ impl TrayIcon {
             // Separator
             AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
 
-            // Sessions
+            // SMTC Sessions
             for (i, session) in state.sessions.iter().enumerate() {
                 let flags = if session.is_selected {
                     MF_STRING | MF_CHECKED
@@ -232,6 +246,39 @@ impl TrayIcon {
                     (MENU_ID_SESSION_START + i as u16) as usize,
                     PCWSTR(text.as_ptr()),
                 )?;
+            }
+
+            // Browser tabs (from extension)
+            if !state.browser_tabs.is_empty() {
+                // Separator before browser tabs if there were SMTC sessions
+                if !state.sessions.is_empty() {
+                    AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
+                }
+
+                // Browser tabs header
+                let header: Vec<u16> = "Browser Tabs\0".encode_utf16().collect();
+                AppendMenuW(
+                    menu,
+                    MF_STRING | MF_UNCHECKED,
+                    0, // No action, just a label
+                    PCWSTR(header.as_ptr()),
+                )?;
+
+                for (i, tab) in state.browser_tabs.iter().enumerate() {
+                    let flags = if tab.is_selected {
+                        MF_STRING | MF_CHECKED
+                    } else {
+                        MF_STRING | MF_UNCHECKED
+                    };
+                    let text: Vec<u16> =
+                        format!("  {}\0", tab.display_name).encode_utf16().collect();
+                    AppendMenuW(
+                        menu,
+                        flags,
+                        (MENU_ID_BROWSER_TAB_START + i as u16) as usize,
+                        PCWSTR(text.as_ptr()),
+                    )?;
+                }
             }
 
             // Separator
@@ -294,6 +341,21 @@ impl TrayIcon {
             TrayAction::ToggleAutostart
         } else if menu_id == MENU_ID_EXIT {
             TrayAction::Exit
+        } else if menu_id >= MENU_ID_BROWSER_TAB_START {
+            // Browser tab selected - look up the tab_id from state
+            let index = (menu_id - MENU_ID_BROWSER_TAB_START) as usize;
+            unsafe {
+                if let Some(ref menu_state) = MENU_STATE {
+                    let state = menu_state.read();
+                    if let Some(tab) = state.browser_tabs.get(index) {
+                        TrayAction::SelectBrowserTab(tab.tab_id)
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            }
         } else if menu_id >= MENU_ID_SESSION_START && menu_id < MENU_ID_AUTOSTART {
             TrayAction::SelectSession((menu_id - MENU_ID_SESSION_START) as usize)
         } else {

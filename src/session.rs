@@ -60,13 +60,15 @@ impl From<GlobalSystemMediaTransportControlsSessionPlaybackStatus> for PlaybackS
     }
 }
 
-/// Current mode of operation
+/// Target for media key routing
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     /// Let Windows handle media keys
     Default,
-    /// Lock to a specific session by ID
+    /// Lock to a specific SMTC session by ID
     Locked(String),
+    /// Lock to a specific browser tab by tab ID
+    BrowserTab(u32),
 }
 
 impl Default for Mode {
@@ -75,10 +77,20 @@ impl Default for Mode {
     }
 }
 
+/// Browser tab info (from extension)
+#[derive(Debug, Clone)]
+pub struct BrowserTabInfo {
+    pub tab_id: u32,
+    pub title: String,
+    pub url: String,
+    pub audible: bool,
+}
+
 /// Manages media sessions and routes commands
 pub struct SessionManager {
     manager: GlobalSystemMediaTransportControlsSessionManager,
     sessions: Arc<RwLock<HashMap<String, SessionInfo>>>,
+    browser_tabs: Arc<RwLock<Vec<BrowserTabInfo>>>,
     mode: Arc<RwLock<Mode>>,
 }
 
@@ -93,6 +105,7 @@ impl SessionManager {
         let session_manager = Self {
             manager,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            browser_tabs: Arc::new(RwLock::new(Vec::new())),
             mode: Arc::new(RwLock::new(Mode::Default)),
         };
 
@@ -143,7 +156,7 @@ impl SessionManager {
             }
         }
 
-        // Check if locked session still exists
+        // Check if locked SMTC session still exists (browser tabs are checked in update_browser_tabs)
         {
             let mode = self.mode.read();
             if let Mode::Locked(ref id) = *mode {
@@ -248,12 +261,12 @@ impl SessionManager {
         }
     }
 
-    /// Get the session to send commands to based on current mode
+    /// Get the SMTC session to send commands to based on current mode
     fn get_target_session(&self) -> Result<Option<GlobalSystemMediaTransportControlsSession>> {
         let mode = self.mode.read();
 
         match &*mode {
-            Mode::Default => Ok(None), // Let Windows handle it
+            Mode::Default | Mode::BrowserTab(_) => Ok(None), // Not targeting SMTC
             Mode::Locked(id) => {
                 // Find the session with this ID
                 let sessions = self
@@ -298,6 +311,39 @@ impl SessionManager {
             info.app_name.clone()
         } else {
             format!("{} - {}", info.app_name, info.title)
+        }
+    }
+
+    // ========================================================================
+    // BROWSER TAB MANAGEMENT
+    // ========================================================================
+
+    /// Update browser tabs from extension
+    pub fn update_browser_tabs(&self, tabs: Vec<BrowserTabInfo>) {
+        // Check if locked browser tab still exists
+        {
+            let mode = self.mode.read();
+            if let Mode::BrowserTab(tab_id) = *mode {
+                if !tabs.iter().any(|t| t.tab_id == tab_id) {
+                    drop(mode);
+                    info!("Locked browser tab no longer audible, reverting to default");
+                    self.set_mode(Mode::Default);
+                }
+            }
+        }
+        *self.browser_tabs.write() = tabs;
+    }
+
+    /// Get all browser tabs
+    pub fn browser_tabs(&self) -> Vec<BrowserTabInfo> {
+        self.browser_tabs.read().clone()
+    }
+
+    /// Check if current mode targets a browser tab
+    pub fn is_browser_tab_mode(&self) -> Option<u32> {
+        match *self.mode.read() {
+            Mode::BrowserTab(tab_id) => Some(tab_id),
+            _ => None,
         }
     }
 }

@@ -1,0 +1,9 @@
+{
+  "name": "com.focusplay.host",
+  "description": "FocusPlay native messaging host for per-tab media control",
+  "path": "C:\\Users\\smpl\\dev\\projects\\focusplay\\target\\release\\focusplay.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://hmomdfigpcgkbkpjobbkhplmmajoifcm/"
+  ]
+}
